@@ -6,7 +6,9 @@ import os
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from datetime import date
+from enum import Enum, auto
 from pathlib import Path
 
 from claude_daily_summary import config
@@ -65,6 +67,25 @@ DIGEST:
 {digest}"""
 
 
+class Outcome(Enum):
+    OK = auto()
+    # The call ran fine but the model produced unusable output (e.g. not
+    # markdown). This recurs for the same digest, so the day is marked done
+    # with a failure placeholder rather than retried forever.
+    CONTENT_FAILURE = auto()
+    # The call itself failed (non-zero exit, timeout, unparseable or errored
+    # response). Usually an environment problem (auth, model, network), so the
+    # run aborts and the day is retried on the next run instead of poisoned.
+    SYSTEMIC_FAILURE = auto()
+
+
+@dataclass
+class SummaryResult:
+    outcome: Outcome
+    markdown: str | None = None
+    footer: str | None = None
+
+
 def resolve_claude_binary() -> str:
     found = shutil.which("claude")
     if found:
@@ -72,7 +93,8 @@ def resolve_claude_binary() -> str:
     fallback = Path.home() / ".local" / "bin" / "claude"
     if fallback.is_file() and os.access(fallback, os.X_OK):
         return str(fallback)
-    sys.exit("claude binary not found on PATH or at ~/.local/bin/claude")
+    log.error("claude binary not found on PATH or at ~/.local/bin/claude")
+    raise SystemExit(1)
 
 
 def resolve_oauth_token(token_file: Path = config.TOKEN_FILE) -> str | None:
@@ -87,10 +109,11 @@ def resolve_oauth_token(token_file: Path = config.TOKEN_FILE) -> str | None:
         return None
     mode = token_file.stat().st_mode
     if mode & 0o077:
-        sys.exit(
-            f"{token_file} is readable by group/others "
-            f"(mode {oct(mode & 0o777)}); run: chmod 600 {token_file}"
+        log.error(
+            "%s is readable by group/others (mode %s); run: chmod 600 %s",
+            token_file, oct(mode & 0o777), token_file,
         )
+        raise SystemExit(1)
     token = token_file.read_text().strip()
     return token or None
 
@@ -112,7 +135,7 @@ def token_footer(usage: dict | None) -> str:
 
 def summarize_date(
     claude_bin: str, day: date, digest: str, token: str | None
-) -> str | None:
+) -> SummaryResult:
     prompt = SUMMARY_PROMPT_TEMPLATE.format(
         date=day.isoformat(), digest=digest, tz=config.LOCAL_TZ.key
     )
@@ -142,28 +165,29 @@ def summarize_date(
         )
     except subprocess.TimeoutExpired:
         log.error("%s: claude timed out after %ds", day, config.CLAUDE_TIMEOUT_SECONDS)
-        return None
+        return SummaryResult(Outcome.SYSTEMIC_FAILURE)
     if result.stderr.strip():
         log.warning("%s: claude stderr: %s", day, result.stderr.strip())
     if result.returncode != 0:
         log.error("%s: claude exited with code %d", day, result.returncode)
         if result.stdout.strip():
             log.error("%s: claude stdout: %s", day, result.stdout.strip())
-        return None
+        return SummaryResult(Outcome.SYSTEMIC_FAILURE)
     try:
         data = json.loads(result.stdout)
     except json.JSONDecodeError:
         log.error("%s: could not parse claude JSON output", day)
         log.error("%s: claude stdout: %s", day, result.stdout.strip()[:2000])
-        return None
+        return SummaryResult(Outcome.SYSTEMIC_FAILURE)
     if data.get("is_error") or data.get("subtype") != "success":
         log.error("%s: claude reported error: subtype=%s errors=%s",
                   day, data.get("subtype"), data.get("errors"))
-        return None
+        return SummaryResult(Outcome.SYSTEMIC_FAILURE)
+    footer = token_footer(data.get("usage"))
     markdown = (data.get("result") or "").strip()
     if not markdown.startswith("#"):
-        log.error("%s: claude output is empty or not markdown, skipping", day)
+        log.error("%s: claude output is empty or not markdown", day)
         if markdown:
             log.error("%s: claude result: %s", day, markdown)
-        return None
-    return f"{markdown}\n\n{token_footer(data.get('usage'))}\n"
+        return SummaryResult(Outcome.CONTENT_FAILURE, footer=f"\n{footer}\n")
+    return SummaryResult(Outcome.OK, markdown=f"{markdown}\n\n{footer}\n")

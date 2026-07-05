@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 
 from claude_daily_summary.summarizer import resolve_oauth_token, token_footer
@@ -43,10 +45,12 @@ def test_missing_and_empty_token_file_return_none(monkeypatch, tmp_path):
     assert resolve_oauth_token(empty) is None
 
 
-def test_loose_token_file_permissions_abort(monkeypatch, tmp_path):
+def test_loose_token_file_permissions_abort(monkeypatch, tmp_path, caplog):
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     token_file = tmp_path / "token"
     token_file.write_text("leaky")
     token_file.chmod(0o644)
-    with pytest.raises(SystemExit, match="chmod 600"):
-        resolve_oauth_token(token_file)
+    with caplog.at_level(logging.ERROR, logger="claude_daily_summary.summarizer"):
+        with pytest.raises(SystemExit):
+            resolve_oauth_token(token_file)
+    assert "chmod 600" in caplog.text

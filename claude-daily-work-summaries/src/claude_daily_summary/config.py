@@ -5,6 +5,23 @@ import sys
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+MODEL = "sonnet"
+MAX_BUDGET_USD = "2.00"
+MAX_CALLS_PER_RUN = 3
+CLAUDE_TIMEOUT_SECONDS = 900
+PROMPT_TRUNCATE_CHARS = 500
+COMMAND_TRUNCATE_CHARS = 200
+DIGEST_CHAR_CAP = 100_000
+
+PROJECTS_DIR = Path.home() / ".claude" / "projects"
+SUMMARIES_DIR = Path.home() / "Documents" / "claude-work-summaries"
+LOGS_DIR = Path.home() / "Library" / "Logs"
+LOCK_FILE = SUMMARIES_DIR / ".claude-daily-summary.lock"
+TOKEN_FILE = Path.home() / ".config" / "claude-daily-summary" / "token"
+LOG_FILE = LOGS_DIR / "claude-daily-summary.log"
+
+_local_tz_cache: ZoneInfo | None = None
+
 
 def _local_timezone() -> ZoneInfo:
     """Resolve the local timezone: TZ env var first, then the system setting."""
@@ -22,18 +39,12 @@ def _local_timezone() -> ZoneInfo:
         sys.exit("Could not determine local timezone; set the TZ environment variable")
 
 
-MODEL = "sonnet"
-MAX_BUDGET_USD = "2.00"
-MAX_CALLS_PER_RUN = 3
-CLAUDE_TIMEOUT_SECONDS = 900
-PROMPT_TRUNCATE_CHARS = 500
-COMMAND_TRUNCATE_CHARS = 200
-DIGEST_CHAR_CAP = 100_000
-
-LOCAL_TZ = _local_timezone()
-PROJECTS_DIR = Path.home() / ".claude" / "projects"
-SUMMARIES_DIR = Path.home() / "Documents" / "claude-work-summaries"
-LOGS_DIR = Path.home() / "Library" / "Logs"
-LOCK_FILE = SUMMARIES_DIR / ".claude-daily-summary.lock"
-TOKEN_FILE = Path.home() / ".config" / "claude-daily-summary" / "token"
-LOG_FILE = LOGS_DIR / "claude-daily-summary.log"
+def __getattr__(name: str):
+    # LOCAL_TZ is resolved lazily and cached so that importing this module can
+    # never exit the process; timezone resolution happens on first real use.
+    if name == "LOCAL_TZ":
+        global _local_tz_cache
+        if _local_tz_cache is None:
+            _local_tz_cache = _local_timezone()
+        return _local_tz_cache
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
