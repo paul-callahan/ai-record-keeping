@@ -31,7 +31,7 @@ PLIST_USER=$(escape_sed_replacement "$INSTALL_USER")
 PLIST_HOME=$(escape_sed_replacement "$HOME")
 
 mkdir -p "$HOME/Library/LaunchAgents"
-"$UV_BIN" tool install --force "$SCRIPT_DIR"
+"$UV_BIN" tool install --force --reinstall "$SCRIPT_DIR"
 sed \
     -e "s/{USER}/$PLIST_USER/g" \
     -e "s/{HOME}/$PLIST_HOME/g" \

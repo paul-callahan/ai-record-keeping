@@ -67,6 +67,7 @@ DIGEST:
 class SummaryResult:
     markdown: Optional[str]
     failed: bool = False
+    failure_reason: Optional[str] = None
 
 
 def render_generation_footer(
@@ -105,6 +106,15 @@ def no_session_data_summary(day: date) -> str:
     return with_footer(body, zero_cost_footer())
 
 
+def generation_failed_summary(day: date, reason: str) -> str:
+    body = (
+        f"# Codex Daily Summary - {day.isoformat()}\n\n"
+        "Summary generation failed. Delete this file and rerun `codex-daily-summary` to retry.\n\n"
+        f"Failure: {reason}"
+    )
+    return with_footer(body, render_generation_footer(None, None, None))
+
+
 def maybe_int(value) -> Optional[int]:
     if isinstance(value, bool):
         return None
@@ -123,10 +133,7 @@ def find_token_usage(value):
         input_tokens = None
         output_tokens = None
 
-        for key in ("total_tokens", "token_count", "tokens"):
-            token_count = maybe_int(value.get(key))
-            if token_count is not None:
-                break
+        token_count = maybe_int(value.get("total_tokens"))
         for key in ("input_tokens", "prompt_tokens"):
             input_tokens = maybe_int(value.get(key))
             if input_tokens is not None:
@@ -136,6 +143,8 @@ def find_token_usage(value):
             if output_tokens is not None:
                 break
 
+        # Only total_tokens is treated as authoritative. Other token-like
+        # fields may be partial stream counters in Codex JSON output.
         if token_count is not None:
             return token_count, input_tokens, output_tokens
 
@@ -229,25 +238,37 @@ def summarize_with_codex(
         if completed.returncode != 0:
             logger.error("%s: codex failed with exit code %s", day.isoformat(), completed.returncode)
             log_subprocess_output(logger, day, completed.stdout, completed.stderr, logging.ERROR)
-            return SummaryResult(markdown=None, failed=True)
+            return SummaryResult(
+                markdown=None,
+                failed=True,
+                failure_reason=f"codex exited with status {completed.returncode}",
+            )
 
         try:
             output = output_path.read_text(encoding="utf-8")
         except OSError as exc:
             logger.error("%s: failed to read Codex output: %s", day.isoformat(), exc)
-            return SummaryResult(markdown=None, failed=True)
+            return SummaryResult(
+                markdown=None,
+                failed=True,
+                failure_reason="output file could not be read",
+            )
 
         output = output.strip()
         if not output or not output.startswith("#"):
             logger.error("%s: Codex output was empty or malformed", day.isoformat())
             log_subprocess_output(logger, day, completed.stdout, completed.stderr, logging.ERROR)
-            return SummaryResult(markdown=None, failed=True)
+            return SummaryResult(
+                markdown=None,
+                failed=True,
+                failure_reason="model output was empty or malformed",
+            )
 
         return SummaryResult(markdown=with_footer(output, footer))
     except subprocess.TimeoutExpired as exc:
         logger.error("%s: codex timed out", day.isoformat())
         log_subprocess_output(logger, day, exc.stdout or "", exc.stderr or "", logging.ERROR)
-        return SummaryResult(markdown=None, failed=True)
+        return SummaryResult(markdown=None, failed=True, failure_reason="codex timed out")
     finally:
         try:
             output_path.unlink()

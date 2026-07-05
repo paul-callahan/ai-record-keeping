@@ -1,7 +1,7 @@
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -55,32 +55,12 @@ class DigestCollection:
             self.oldest_event_date = event_date
 
 
-def local_midnight(day: date) -> datetime:
-    return datetime.combine(day, time.min, tzinfo=config.LOCAL_ZONE)
-
-
 def iter_rollout_files(
     sessions_dir: Path,
     archived_dir: Path,
-    oldest_target: date,
 ) -> Iterable[Path]:
-    cutoff = local_midnight(oldest_target).timestamp()
-
-    for rollout_file in sessions_dir.glob("*/*/*/*.jsonl"):
-        try:
-            if rollout_file.stat().st_mtime < cutoff:
-                continue
-        except OSError:
-            continue
-        yield rollout_file
-
-    for rollout_file in archived_dir.glob("rollout-*.jsonl"):
-        try:
-            if rollout_file.stat().st_mtime < cutoff:
-                continue
-        except OSError:
-            continue
-        yield rollout_file
+    yield from sessions_dir.glob("*/*/*/*.jsonl")
+    yield from archived_dir.glob("rollout-*.jsonl")
 
 
 def parse_event_time(record: dict) -> Optional[datetime]:
@@ -107,12 +87,12 @@ def should_skip_user_message(message: str) -> bool:
     return any(message.startswith(prefix) for prefix in config.INJECTED_MESSAGE_PREFIXES)
 
 
-def update_meta(record: dict, meta: SessionMeta) -> None:
+def update_meta(record: dict, meta: SessionMeta) -> bool:
     if record.get("type") != "session_meta":
-        return
+        return False
     payload = record.get("payload")
     if not isinstance(payload, dict):
-        return
+        return False
 
     cwd = payload.get("cwd")
     if isinstance(cwd, str) and cwd:
@@ -127,6 +107,8 @@ def update_meta(record: dict, meta: SessionMeta) -> None:
         branch = git.get("branch")
         if isinstance(branch, str) and branch:
             meta.branch = branch
+
+    return True
 
 
 def decode_arguments(payload: dict):
@@ -239,8 +221,8 @@ def parse_rollout_file(
                 if not isinstance(record, dict):
                     continue
 
-                update_meta(record, meta)
-                apply_meta_to_existing_digests(collection, rollout_file, meta)
+                if update_meta(record, meta):
+                    apply_meta_to_existing_digests(collection, rollout_file, meta)
 
                 event_time = parse_event_time(record)
                 if event_time is None:
@@ -268,7 +250,7 @@ def collect_digests(
         return collection
 
     target_set = set(target_days)
-    for rollout_file in iter_rollout_files(sessions_dir, archived_dir, min(target_days)):
+    for rollout_file in iter_rollout_files(sessions_dir, archived_dir):
         parse_rollout_file(rollout_file, target_set, collection)
     return collection
 
@@ -292,8 +274,6 @@ def render_session_digest(session_digest: SessionDigest) -> str:
             f"{session_digest.first_event.strftime('%H:%M:%S')} - "
             f"{session_digest.last_event.strftime('%H:%M:%S')}"
         )
-    lines.append(f"Source: {session_digest.source_file}")
-
     if session_digest.user_prompts:
         lines.append("User prompts:")
         lines.extend(f"- {prompt}" for prompt in session_digest.user_prompts)

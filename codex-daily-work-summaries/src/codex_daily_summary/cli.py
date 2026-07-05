@@ -12,6 +12,7 @@ from typing import Optional
 from . import config
 from .digest import build_digest, collect_digests
 from .summarizer import (
+    generation_failed_summary,
     no_activity_summary,
     no_session_data_summary,
     summarize_with_codex,
@@ -145,8 +146,10 @@ def process_missing_dates(codex: str, missing_dates: list[date], logger: logging
         digest = build_digest(day, sessions)
         result = summarize_with_codex(codex, config.HOME, day, digest, logger)
         if result.failed or result.markdown is None:
+            reason = result.failure_reason or "unknown summary generation failure"
+            atomic_write(output_path, generation_failed_summary(day, reason))
             logger.error(
-                "%s: summary failed after %ss",
+                "%s: summary failed after %ss; wrote failure placeholder",
                 day.isoformat(),
                 round(time.monotonic() - started),
             )
