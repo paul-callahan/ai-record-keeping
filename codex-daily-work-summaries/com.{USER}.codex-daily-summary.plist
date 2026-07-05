@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.{USER}.codex-daily-summary</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>{HOME}/.local/bin/codex-daily-summary</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>BACKFILL_DAYS</key>
+        <string>65</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StartInterval</key>
+    <integer>18000</integer>
+
+    <key>StandardOutPath</key>
+    <string>{HOME}/Library/Logs/codex-daily-summary.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>{HOME}/Library/Logs/codex-daily-summary.log</string>
+</dict>
+</plist>

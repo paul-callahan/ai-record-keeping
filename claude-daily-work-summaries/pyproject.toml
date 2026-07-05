@@ -1,0 +1,17 @@
+[project]
+name = "claude-daily-summary"
+version = "1.0.0"
+description = "Daily work-diary summaries generated from Claude Code session transcripts"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+claude-daily-summary = "claude_daily_summary.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["uv_build>=0.11.0,<0.12.0"]
+build-backend = "uv_build"
