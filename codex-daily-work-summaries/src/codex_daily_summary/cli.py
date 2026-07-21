@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import config
-from .digest import build_digest, collect_digests
+from .digest import TokenUsage, build_digest, collect_digests, estimate_total_active_minutes
 from .summarizer import (
     generation_failed_summary,
     no_activity_summary,
@@ -142,12 +142,14 @@ def process_missing_dates(codex: str, missing_dates: list[date], logger: logging
             deferred = len(missing_dates) - index
             break
 
+        token_usage = collection.token_usage.get(day, TokenUsage())
         calls_made += 1
-        digest = build_digest(day, sessions)
+        digest = build_digest(day, sessions, token_usage=token_usage)
         result = summarize_with_codex(codex, config.HOME, day, digest, logger)
         if result.failed or result.markdown is None:
             reason = result.failure_reason or "unknown summary generation failure"
-            atomic_write(output_path, generation_failed_summary(day, reason))
+            active_minutes = estimate_total_active_minutes(sessions)
+            atomic_write(output_path, generation_failed_summary(day, reason, active_minutes, token_usage))
             logger.error(
                 "%s: summary failed after %ss; wrote failure placeholder",
                 day.isoformat(),

@@ -10,7 +10,12 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from claude_daily_summary import config
-from claude_daily_summary.digest import build_digest, collect_digests
+from claude_daily_summary.digest import (
+    active_time_line,
+    build_digest,
+    collect_digests,
+    token_usage_line,
+)
 from claude_daily_summary.summarizer import (
     Outcome,
     resolve_claude_binary,
@@ -95,6 +100,25 @@ def atomic_write(path: Path, content: str) -> None:
                 pass
 
 
+def insert_after_summary(markdown: str, block: str) -> str:
+    """Insert block after the ## Summary section, before the next ## heading.
+
+    Falls back to appending at the end if the expected structure is missing.
+    """
+    summary_at = markdown.find("\n## Summary")
+    if summary_at != -1:
+        next_heading = markdown.find("\n## ", summary_at + 1)
+        if next_heading != -1:
+            return (
+                markdown[:next_heading]
+                + "\n"
+                + block.rstrip()
+                + "\n"
+                + markdown[next_heading:]
+            )
+    return markdown.rstrip() + "\n\n" + block.rstrip() + "\n"
+
+
 def backfill(ordered, digests, horizon, summarize) -> int:
     """Fill missing days oldest-first; return the number of failed days.
 
@@ -131,16 +155,24 @@ def backfill(ordered, digests, horizon, summarize) -> int:
                       day, elapsed)
             failures += 1
             break
+        metrics = active_time_line(sessions)
+        usage_line = token_usage_line(sessions)
+        if usage_line:
+            metrics += "\n" + usage_line
         if result.outcome is Outcome.CONTENT_FAILURE:
             atomic_write(
                 summary_file,
-                FAILED_TEMPLATE.format(date=day.isoformat()) + (result.footer or FAILED_FOOTER),
+                insert_after_summary(
+                    FAILED_TEMPLATE.format(date=day.isoformat())
+                    + (result.footer or FAILED_FOOTER),
+                    metrics,
+                ),
             )
             log.error("%s: content failure after %.0fs; wrote failure placeholder "
                       "(delete it to retry)", day, elapsed)
             failures += 1
             continue
-        atomic_write(summary_file, result.markdown)
+        atomic_write(summary_file, insert_after_summary(result.markdown, metrics))
         log.info("%s: wrote summary from %d session(s) in %.0fs",
                  day, len(sessions), elapsed)
     return failures

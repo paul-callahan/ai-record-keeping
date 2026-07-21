@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Optional
 
 from . import config
+from .activity_time import format_active_duration
+from .digest import TokenUsage, format_token_usage
 
 
 PROMPT_TEMPLATE = """You are given a digest of Codex coding sessions for {date} ({time_zone}).
@@ -20,6 +22,13 @@ Structure:
 
 ## Summary
 No more than 3 sentences on what was done that day.
+
+## Estimated Codex Activity Time
+Report the estimated active time exactly as provided in the digest, including the
+inactivity cutoff.
+
+## Estimated Codex Token Usage
+Report the estimated token usage exactly as provided in the digest.
 
 ## Repos / Workspaces
 Bulleted list of the repos worked in that day, if any.
@@ -57,6 +66,8 @@ Rules:
 - Omit any section or subsection that would be empty.
 - Do not narrate session friction or tooling mishaps unless they cost significant time.
 - Do not invent work not supported by the digest. No commentary outside the file content.
+- Treat estimated active time as approximate interaction time, not verified attention time.
+- Treat estimated token usage as an approximate local event total, not a billing statement.
 
 DIGEST:
 {digest}
@@ -93,23 +104,43 @@ def with_footer(markdown: str, footer: str) -> str:
     return markdown.rstrip() + "\n\n---\n" + footer + "\n"
 
 
+def estimated_time_line(active_minutes: int) -> str:
+    return (
+        f"Estimated Codex activity time: {format_active_duration(active_minutes)} "
+        f"using a {config.ACTIVE_TIME_GAP_MINUTES}-minute inactivity cutoff."
+    )
+
+
+def estimated_token_line(token_usage: TokenUsage) -> str:
+    return f"Estimated Codex token usage: {format_token_usage(token_usage)}."
+
+
 def no_activity_summary(day: date) -> str:
-    body = f"# Codex Daily Summary - {day.isoformat()}\n\nNo Codex activity found."
+    body = (
+        f"# Codex Daily Summary - {day.isoformat()}\n\n"
+        "No Codex activity found.\n\n"
+        f"{estimated_time_line(0)}\n\n"
+        f"{estimated_token_line(TokenUsage())}"
+    )
     return with_footer(body, zero_cost_footer())
 
 
 def no_session_data_summary(day: date) -> str:
     body = (
         f"# Codex Daily Summary - {day.isoformat()}\n\n"
-        "No Codex session data is available for this date. Sessions may have been pruned or absent."
+        "No Codex session data is available for this date. Sessions may have been pruned or absent.\n\n"
+        "Estimated Codex activity time: unavailable because no session data was found.\n\n"
+        "Estimated Codex token usage: unavailable because no session data was found."
     )
     return with_footer(body, zero_cost_footer())
 
 
-def generation_failed_summary(day: date, reason: str) -> str:
+def generation_failed_summary(day: date, reason: str, active_minutes: int, token_usage: TokenUsage) -> str:
     body = (
         f"# Codex Daily Summary - {day.isoformat()}\n\n"
         "Summary generation failed. Delete this file and rerun `codex-daily-summary` to retry.\n\n"
+        f"{estimated_time_line(active_minutes)}\n\n"
+        f"{estimated_token_line(token_usage)}\n\n"
         f"Failure: {reason}"
     )
     return with_footer(body, render_generation_footer(None, None, None))
@@ -127,26 +158,51 @@ def maybe_int(value) -> Optional[int]:
     return None
 
 
+def usage_from_mapping(value: dict):
+    token_count = maybe_int(value.get("total_tokens"))
+    if token_count is None:
+        return None
+
+    input_tokens = None
+    output_tokens = None
+    for key in ("input_tokens", "prompt_tokens"):
+        input_tokens = maybe_int(value.get(key))
+        if input_tokens is not None:
+            break
+    for key in ("output_tokens", "completion_tokens"):
+        output_tokens = maybe_int(value.get(key))
+        if output_tokens is not None:
+            break
+
+    return token_count, input_tokens, output_tokens
+
+
+def codex_token_count_usage(value: dict):
+    if value.get("type") == "token_count":
+        info = value.get("info")
+        if isinstance(info, dict):
+            usage = info.get("total_token_usage")
+            if isinstance(usage, dict):
+                found = usage_from_mapping(usage)
+                if found is not None:
+                    return found
+
+    payload = value.get("payload")
+    if isinstance(payload, dict):
+        return codex_token_count_usage(payload)
+
+    return None
+
+
 def find_token_usage(value):
     if isinstance(value, dict):
-        token_count = None
-        input_tokens = None
-        output_tokens = None
+        found = codex_token_count_usage(value)
+        if found is not None:
+            return found
 
-        token_count = maybe_int(value.get("total_tokens"))
-        for key in ("input_tokens", "prompt_tokens"):
-            input_tokens = maybe_int(value.get(key))
-            if input_tokens is not None:
-                break
-        for key in ("output_tokens", "completion_tokens"):
-            output_tokens = maybe_int(value.get(key))
-            if output_tokens is not None:
-                break
-
-        # Only total_tokens is treated as authoritative. Other token-like
-        # fields may be partial stream counters in Codex JSON output.
-        if token_count is not None:
-            return token_count, input_tokens, output_tokens
+        found = usage_from_mapping(value)
+        if found is not None:
+            return found
 
         for nested in value.values():
             found = find_token_usage(nested)

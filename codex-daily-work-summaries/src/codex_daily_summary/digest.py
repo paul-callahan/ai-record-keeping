@@ -1,11 +1,12 @@
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Optional
 
 from . import config
+from .activity_time import format_active_duration
 
 
 PATCH_FILE_RE = re.compile(r"^\*\*\* (?:Add|Update|Delete) File: (.+)$", re.MULTILINE)
@@ -26,6 +27,7 @@ class SessionDigest:
     branch: Optional[str] = None
     first_event: Optional[datetime] = None
     last_event: Optional[datetime] = None
+    event_times: list[datetime] = field(default_factory=list)
     user_prompts: list[str] = field(default_factory=list)
     commands: list[str] = field(default_factory=list)
     files_edited: set[str] = field(default_factory=set)
@@ -39,20 +41,64 @@ class SessionDigest:
             self.session_id = meta.session_id
 
     def note_event_time(self, event_time: datetime) -> None:
+        self.event_times.append(event_time)
         if self.first_event is None or event_time < self.first_event:
             self.first_event = event_time
         if self.last_event is None or event_time > self.last_event:
             self.last_event = event_time
 
 
+def estimate_active_minutes(
+    event_times: list[datetime],
+    gap_minutes: int = config.ACTIVE_TIME_GAP_MINUTES,
+) -> int:
+    sorted_times = sorted(event_times)
+    if len(sorted_times) < 2:
+        return 0
+
+    active_time = timedelta()
+    max_gap = timedelta(minutes=gap_minutes)
+    for previous, current in zip(sorted_times, sorted_times[1:]):
+        gap = current - previous
+        if timedelta() < gap <= max_gap:
+            active_time += gap
+
+    return round(active_time.total_seconds() / 60)
+
+
+def estimate_total_active_minutes(sessions: list[SessionDigest]) -> int:
+    event_times = [event_time for session in sessions for event_time in session.event_times]
+    return estimate_active_minutes(event_times)
+
+
+@dataclass
+class TokenUsage:
+    input_tokens: int = 0
+    output_tokens: int = 0
+    unsplit_tokens: int = 0
+
+    @property
+    def total_tokens(self) -> int:
+        return self.input_tokens + self.output_tokens + self.unsplit_tokens
+
+    def add(self, other: "TokenUsage") -> None:
+        self.input_tokens += other.input_tokens
+        self.output_tokens += other.output_tokens
+        self.unsplit_tokens += other.unsplit_tokens
+
+
 @dataclass
 class DigestCollection:
     date_buckets: dict[date, dict[str, SessionDigest]] = field(default_factory=dict)
+    token_usage: dict[date, TokenUsage] = field(default_factory=dict)
     oldest_event_date: Optional[date] = None
 
     def note_event_date(self, event_date: date) -> None:
         if self.oldest_event_date is None or event_date < self.oldest_event_date:
             self.oldest_event_date = event_date
+
+    def note_token_usage(self, event_date: date, token_usage: TokenUsage) -> None:
+        self.token_usage.setdefault(event_date, TokenUsage()).add(token_usage)
 
 
 def iter_rollout_files(
@@ -141,6 +187,51 @@ def extract_patch_text(payload: dict) -> str:
         parts = [value for value in decoded.values() if isinstance(value, str)]
         return "\n".join(parts)
     return ""
+
+
+def maybe_int(value) -> Optional[int]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
+
+
+def first_int(usage: dict, keys: tuple[str, ...]) -> Optional[int]:
+    for key in keys:
+        value = maybe_int(usage.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def extract_last_token_usage(record: dict) -> Optional[TokenUsage]:
+    payload = record.get("payload")
+    if not isinstance(payload, dict) or payload.get("type") != "token_count":
+        return None
+
+    info = payload.get("info")
+    if not isinstance(info, dict):
+        return None
+
+    usage = info.get("last_token_usage")
+    if not isinstance(usage, dict):
+        return None
+
+    input_tokens = first_int(usage, ("input_tokens", "prompt_tokens"))
+    output_tokens = first_int(usage, ("output_tokens", "completion_tokens"))
+    if input_tokens is not None and output_tokens is not None:
+        return TokenUsage(input_tokens=input_tokens, output_tokens=output_tokens)
+
+    total_tokens = maybe_int(usage.get("total_tokens"))
+    if total_tokens is not None:
+        return TokenUsage(unsplit_tokens=total_tokens)
+
+    return None
 
 
 def record_event_details(record: dict, session_digest: SessionDigest) -> None:
@@ -233,6 +324,10 @@ def parse_rollout_file(
                 if day not in target_dates:
                     continue
 
+                token_usage = extract_last_token_usage(record)
+                if token_usage is not None:
+                    collection.note_token_usage(day, token_usage)
+
                 session_digest = ensure_digest(collection, day, rollout_file, meta)
                 session_digest.note_event_time(event_time)
                 record_event_details(record, session_digest)
@@ -274,6 +369,10 @@ def render_session_digest(session_digest: SessionDigest) -> str:
             f"{session_digest.first_event.strftime('%H:%M:%S')} - "
             f"{session_digest.last_event.strftime('%H:%M:%S')}"
         )
+    lines.append(
+        "Estimated active time: "
+        f"{format_active_duration(estimate_active_minutes(session_digest.event_times))}"
+    )
     if session_digest.user_prompts:
         lines.append("User prompts:")
         lines.extend(f"- {prompt}" for prompt in session_digest.user_prompts)
@@ -289,9 +388,20 @@ def render_session_digest(session_digest: SessionDigest) -> str:
     return "\n".join(lines)
 
 
+def format_token_usage(token_usage: TokenUsage) -> str:
+    return (
+        f"{token_usage.total_tokens:,} total tokens "
+        f"({token_usage.input_tokens:,} input + "
+        f"{token_usage.output_tokens:,} output + "
+        f"{token_usage.unsplit_tokens:,} unsplit total) "
+        "from local token_count events"
+    )
+
+
 def build_digest(
     day: date,
     sessions: list[SessionDigest],
+    token_usage: Optional[TokenUsage] = None,
     char_cap: int = config.DIGEST_CHAR_LIMIT,
 ) -> str:
     sorted_sessions = sorted(
@@ -299,12 +409,18 @@ def build_digest(
         key=lambda item: item.first_event or datetime.min.replace(tzinfo=config.LOCAL_ZONE),
     )
     rendered_sessions = [render_session_digest(session) for session in sorted_sessions]
+    total_active_minutes = estimate_total_active_minutes(sorted_sessions)
+    token_usage = token_usage or TokenUsage()
 
     digest_text = "\n".join(
         [
             f"# Digest for {day.isoformat()}",
             "",
             f"Sessions with activity: {len(rendered_sessions)}",
+            "Estimated Codex active time: "
+            f"{format_active_duration(total_active_minutes)} "
+            f"using a {config.ACTIVE_TIME_GAP_MINUTES}-minute inactivity cutoff",
+            f"Estimated Codex token usage: {format_token_usage(token_usage)}",
             "",
         ]
     )

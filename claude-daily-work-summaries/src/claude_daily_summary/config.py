@@ -12,6 +12,7 @@ CLAUDE_TIMEOUT_SECONDS = 900
 PROMPT_TRUNCATE_CHARS = 500
 COMMAND_TRUNCATE_CHARS = 200
 DIGEST_CHAR_CAP = 100_000
+IDLE_THRESHOLD_MINUTES = 15
 
 PROJECTS_DIR = Path.home() / ".claude" / "projects"
 SUMMARIES_DIR = Path.home() / "Documents" / "claude-work-summaries"

@@ -1,57 +1,93 @@
 # AI Coding Work Summaries
 
-Two sibling tools that turn the session history left behind by AI coding assistants into a
-daily work diary. Each one runs unattended in the background and writes one markdown file
-per day describing what you worked on, intended as a record you can mine for performance
-reviews and resume writing.
+Two sibling tools that turn local AI coding session logs into a daily work diary. Each
+one runs in the background and writes one markdown file per day, giving you a record you
+can use for performance reviews, status updates, and resume notes.
 
 - [claude-daily-work-summaries](claude-daily-work-summaries/) summarizes Claude Code
   sessions.
 - [codex-daily-work-summaries](codex-daily-work-summaries/) summarizes Codex sessions.
 
 They are independent projects with the same design. Install and usage details live in each
-subdirectory's README; this document only explains what they do.
+subdirectory's README.
 
 ## What they do
 
-Both assistants record every session to local files: Claude Code under
-`~/.claude/projects/`, Codex under `~/.codex/sessions/`. Those transcripts are large and
-noisy. Each tool reads its own transcripts, groups the events by calendar day, and writes:
+Both assistants record sessions to local files: Claude Code under
+`~/.claude/projects/`, Codex under `~/.codex/sessions/`. Each tool reads its own logs,
+groups events by calendar day, and writes:
 
 ```text
 ~/Documents/claude-work-summaries/daily-summary-YYYY-MM-DD.md
 ~/Documents/codex-work-summaries/daily-summary-YYYY-MM-DD.md
 ```
 
-A summary file leads with a short overview of the day, then breaks the work down by
-repository (major discussions and the decisions reached, the coding work and its outcomes,
-and the git commits made in those sessions), followed by any substantive standalone chats.
-The output is deliberately shaped as a diary: it weights space by significance, skips
-noise like verification commands and exhaustive file lists, and never invents work the
-transcripts do not support.
+A summary file starts with a short overview of the day, then breaks the work down by
+repository: major discussions, decisions, coding work, outcomes, and commits recorded in
+those sessions. Substantive standalone chats are included too. The summaries favor the
+work that mattered and skip noise like exhaustive file lists and routine verification
+commands.
 
-## How they work
+Each file also includes basic measurements from the logs. Active time is estimated by
+merging event timestamps into work blocks, with gaps over 15 minutes treated as idle.
+Daily token usage comes from the local transcript data: Claude reports consumed tokens
+(fresh input + output) and total processed tokens (including cache reads), while Codex
+reports total tokens split into input, output, and unsplit total buckets.
 
-The two tools share one architecture:
+## Sample Codex Summary
 
-- **Digest pre-pass.** A plain Python step parses the raw transcripts into a compact,
-  bounded per-day digest. This costs no model tokens and does all the file handling
-  deterministically. The model is only ever asked to turn a digest into prose.
-- **One call per active day.** Days with real activity get a single headless model call
-  (`claude -p` or `codex exec`, run read-only with no session persistence). Days with no
-  activity are written directly by Python with no model call at all.
-- **Yesterday backward, never today.** The current day is excluded, because a file written
-  at midday would permanently hide the afternoon's work. Existing files are never
-  regenerated, so the run is cheap and idempotent.
-- **Throttled catch-up.** Each run makes at most a few model calls, oldest day first, so a
-  large backlog (for example switching this on after weeks of work) fills in gradually
-  over successive runs rather than in one expensive burst. Progress is contiguous: a run
-  never leaves a hole behind the days it has already reached.
-- **Honest placeholders.** A day with no activity is marked as such; a day whose
-  transcripts were already pruned by the assistant's retention policy is marked as
-  unavailable rather than falsely reported as idle.
-- **Token accounting.** Each generated file ends with a footer recording the tokens spent
-  producing it.
+Here is the shape of a generated Codex summary. This example is made up.
+
+```md
+# Codex Daily Summary - 2026-07-20
+
+## Summary
+Spent the day tightening the daily summary tooling and cleaning up the install flow. The
+main work was making token accounting easier to read, improving launchd documentation,
+and removing a few stale assumptions from the README files.
+
+## Estimated Codex Activity Time
+Estimated Codex activity time: 3 hours 18 minutes (198 minutes) using a 15-minute
+inactivity cutoff.
+
+## Estimated Codex Token Usage
+Estimated Codex token usage: 184,220 total tokens (142,300 input + 31,920 output +
+10,000 unsplit total) from local token_count events.
+
+## Repos / Workspaces
+- codex-daily-work-summaries
+- ai-record-keeping
+
+## codex-daily-work-summaries
+### Major Discussions
+**Token accounting**
+- Decided to report input, output, and unsplit totals separately instead of showing one
+  blended token number.
+- Kept the wording clear that these are local transcript totals, not billing records.
+
+**Launchd setup**
+- Clarified that install copies the plist but does not load or start the agent.
+- Added explicit bootstrap, kickstart, and bootout commands for later use.
+
+### Coding Work
+**Daily token usage**
+- Added split token aggregation from Codex token_count events.
+- Carried the token usage line into generated summaries and failure placeholders.
+
+**Documentation cleanup**
+- Reworked the project README into a more direct setup and usage guide.
+- Updated the parent README so Claude and Codex token accounting are described separately.
+
+### Git Commits
+None recorded.
+
+## Standalone Chats
+**SSH setup**
+- Discussed a dual-key GitHub SSH config for work and personal accounts.
+
+---
+_Generation cost: 28,631 tokens (26,100 input + 2,531 output)._
+```
 
 ## Scheduling
 
